@@ -2,13 +2,11 @@ const express = require('express');
 const puppeteer = require('puppeteer');
 const multer = require('multer');
 const cors = require('cors');
-const path = require('path');
 const fs = require('fs');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Credenciales desde variables de entorno
 const INTRANET_URL = 'https://www.tuintranet.cl/razor/';
 const INTRANET_USER = process.env.INTRANET_USER || '167448429';
 const INTRANET_PASS = process.env.INTRANET_PASS || '16744';
@@ -16,12 +14,10 @@ const INTRANET_PASS = process.env.INTRANET_PASS || '16744';
 app.use(cors());
 app.use(express.json());
 
-// Multer: guardar fotos temporalmente
 const upload = multer({ dest: '/tmp/uploads/' });
 
-// ===================== HEALTH CHECK =====================
 app.get('/', (req, res) => {
-  res.json({ ok: true, mensaje: 'Servidor Medidor funcionando ✅', version: '1.0.0' });
+  res.json({ ok: true, mensaje: 'Servidor Medidor funcionando ✅' });
 });
 
 // ===================== BUSCAR CUENTA =====================
@@ -33,65 +29,65 @@ app.post('/buscar-cuenta', async (req, res) => {
   try {
     browser = await launchBrowser();
     const page = await browser.newPage();
+    page.setDefaultNavigationTimeout(60000);
+    page.setDefaultTimeout(60000);
+
     await login(page);
+    console.log('Login OK, navegando a map_change...');
 
-    // Navegar a cambio de medidor
-    await page.goto('https://www.tuintranet.cl/razor/dynamic_menu/map_change.aspx', { waitUntil: 'networkidle0' });
+    await page.goto('https://www.tuintranet.cl/razor/dynamic_menu/map_change.aspx', {
+      waitUntil: 'domcontentloaded',
+      timeout: 60000
+    });
 
-    // Seleccionar móvil (primer option disponible)
-    await page.waitForSelector('select', { timeout: 5000 }).catch(() => {});
+    await sleep(2000);
 
-    // Ingresar cuenta
-    await page.waitForSelector('input[placeholder*="cuenta"], #txt_search, input[type="text"]', { timeout: 5000 }).catch(() => {});
+    // Ingresar cuenta en el campo de búsqueda
+    await page.waitForSelector('#txt_search', { timeout: 15000 });
+    await page.click('#txt_search', { clickCount: 3 });
+    await page.type('#txt_search', cuenta.toString());
+    console.log('Cuenta ingresada:', cuenta);
 
-    // Buscar el campo de cuenta
-    const inputCuenta = await page.$('input[id*="search"], input[placeholder*="cuenta"]');
-    if (inputCuenta) {
-      await inputCuenta.click({ clickCount: 3 });
-      await inputCuenta.type(cuenta);
-    }
+    // Buscar y hacer click en Iniciar formulario
+    await page.evaluate(() => {
+      const btns = [...document.querySelectorAll('input[type="submit"], button, input[type="button"]')];
+      const btn = btns.find(b => (b.value || b.textContent || '').toLowerCase().includes('iniciar'));
+      if (btn) btn.click();
+    });
 
-    // Click en Iniciar formulario
-    const btnIniciar = await page.$('input[value*="Iniciar"], button[id*="iniciar"], input[id*="iniciar"]');
-    if (btnIniciar) {
-      await btnIniciar.click();
-      await page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 10000 }).catch(() => {});
-    }
+    await sleep(4000);
 
-    // Extraer datos del cliente
+    // Extraer datos
     const datos = await page.evaluate(() => {
-      const getText = (label) => {
-        const rows = document.querySelectorAll('.info-row, tr, div');
-        for (const row of rows) {
-          if (row.textContent.includes(label)) {
-            const next = row.nextElementSibling;
-            if (next) return next.textContent.trim();
-          }
-        }
-        // Buscar en innerText del contenido principal
-        const content = document.getElementById('contentPrincipal_div_result');
-        if (!content) return '—';
-        const text = content.innerText;
+      const content = document.getElementById('contentPrincipal_div_result');
+      if (!content) return null;
+      const text = content.innerText;
+
+      const getVal = (label) => {
         const idx = text.indexOf(label);
         if (idx === -1) return '—';
-        const after = text.substring(idx + label.length).trim();
-        return after.split('\n')[0].trim();
+        return text.substring(idx + label.length).trim().split('\n')[0].trim();
       };
 
       return {
-        cuenta: getText('Cuenta'),
-        cliente: getText('Cliente'),
-        direccion: getText('Dirección'),
-        comuna: getText('Comuna'),
-        lectura_ant: getText('Lectura'),
-        motivo: getText('Motivo'),
-        nRetirado: getText('N° retirado'),
-        marcaRetirada: getText('Marca retirado'),
+        cuenta: getVal('Cuenta'),
+        cliente: getVal('Cliente'),
+        direccion: getVal('Dirección'),
+        comuna: getVal('Comuna'),
+        lectura_ant: getVal('Lectura'),
+        motivo: getVal('Motivo'),
+        nRetirado: getVal('N° retirado'),
+        marcaRetirada: getVal('Marca retirado'),
       };
     });
 
     await browser.close();
-    res.json({ ok: true, ...datos });
+
+    if (datos && datos.cliente !== '—') {
+      res.json({ ok: true, ...datos });
+    } else {
+      res.json({ ok: false, mensaje: 'Cuenta no encontrada en el sistema' });
+    }
 
   } catch (e) {
     if (browser) await browser.close().catch(() => {});
@@ -111,107 +107,98 @@ app.post('/enviar-formulario', upload.fields([
   const fotos = req.files;
 
   if (!cuenta || !lectura || !barcode) {
-    return res.json({ ok: false, mensaje: 'Faltan datos: cuenta, lectura o barcode' });
+    return res.json({ ok: false, mensaje: 'Faltan datos' });
   }
 
   let browser;
   try {
     browser = await launchBrowser();
     const page = await browser.newPage();
+    page.setDefaultNavigationTimeout(60000);
+    page.setDefaultTimeout(60000);
+
     await login(page);
 
-    // Ir a cambio de medidor
     await page.goto('https://www.tuintranet.cl/razor/dynamic_menu/map_change.aspx', {
-      waitUntil: 'networkidle0', timeout: 30000
+      waitUntil: 'domcontentloaded',
+      timeout: 60000
     });
 
-    // Esperar y llenar el campo de cuenta
-    await page.waitForSelector('#txt_search', { timeout: 10000 });
-    await page.click('#txt_search', { clickCount: 3 });
-    await page.type('#txt_search', cuenta);
-
-    // Click en Iniciar formulario
-    await page.waitForSelector('input[value*="Iniciar"], button:contains("Iniciar")', { timeout: 5000 }).catch(() => {});
-    
-    // Buscar botón de iniciar formulario
-    await page.evaluate(() => {
-      const btns = document.querySelectorAll('input[type="submit"], button');
-      for (const btn of btns) {
-        if (btn.value?.includes('Iniciar') || btn.textContent?.includes('Iniciar')) {
-          btn.click();
-          return;
-        }
-      }
-    });
-
-    await page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 15000 }).catch(() => {});
-
-    // Ingresar LECTURA
-    await page.waitForSelector('#contentPrincipal_txt_read', { timeout: 10000 });
-    
-    // Marcar checkbox de lectura si existe
-    const chk = await page.$('#contentPrincipal_chk_lectura');
-    if (chk) {
-      const isChecked = await page.$eval('#contentPrincipal_chk_lectura', el => el.checked);
-      if (!isChecked) await chk.click();
-    }
-
-    await page.click('#contentPrincipal_txt_read', { clickCount: 3 });
-    await page.type('#contentPrincipal_txt_read', lectura.toString());
-
-    // Seleccionar CÓDIGO DE BARRA en el dropdown
-    await page.waitForSelector('#ddl_code_bar', { timeout: 5000 });
-    await page.select('#ddl_code_bar', barcode);
-
-    // Click en botón FOTOS
-    await page.waitForSelector('#contentPrincipal_btn_photos', { timeout: 5000 });
-    await page.click('#contentPrincipal_btn_photos');
-    
-    // Esperar modal de fotos
-    await page.waitForSelector('#contentPrincipal_fup_file_1', { timeout: 10000 });
-    await sleep(1000);
-
-    // Subir las 4 fotos
-    const fotoMap = {
-      '#contentPrincipal_fup_file_1': fotos.foto1?.[0]?.path,
-      '#contentPrincipal_fup_file_2': fotos.foto2?.[0]?.path,
-      '#contentPrincipal_fup_file_3': fotos.foto3?.[0]?.path,
-      '#contentPrincipal_fup_file_5': fotos.foto5?.[0]?.path,
-    };
-
-    for (const [selector, filePath] of Object.entries(fotoMap)) {
-      if (filePath) {
-        const input = await page.$(selector);
-        if (input) {
-          await input.uploadFile(filePath);
-          await sleep(500);
-        }
-      }
-    }
-
-    // Click en SUBIR FOTOS
-    await page.waitForSelector('#contentPrincipal_btn_modal_all_insert', { timeout: 5000 });
-    await page.click('#contentPrincipal_btn_modal_all_insert');
-    await sleep(3000);
-
-    // Click en FINALIZAR
-    await page.waitForSelector('#contentPrincipal_btn_finish', { timeout: 10000 });
-    await page.click('#contentPrincipal_btn_finish');
     await sleep(2000);
 
-    // Obtener ID del formulario si aparece
-    const idForm = await page.evaluate(() => {
-      const content = document.body.innerText;
-      const match = content.match(/ID Form[:\s]+(\d+)/);
-      return match ? match[1] : null;
+    // Ingresar cuenta
+    await page.waitForSelector('#txt_search', { timeout: 15000 });
+    await page.click('#txt_search', { clickCount: 3 });
+    await page.type('#txt_search', cuenta.toString());
+
+    // Click Iniciar formulario
+    await page.evaluate(() => {
+      const btns = [...document.querySelectorAll('input[type="submit"], button, input[type="button"]')];
+      const btn = btns.find(b => (b.value || b.textContent || '').toLowerCase().includes('iniciar'));
+      if (btn) btn.click();
     });
 
+    await sleep(4000);
+
+    // Marcar checkbox lectura
+    const chk = await page.$('#contentPrincipal_chk_lectura');
+    if (chk) {
+      const checked = await page.$eval('#contentPrincipal_chk_lectura', el => el.checked);
+      if (!checked) await chk.click();
+    }
+
+    // Ingresar lectura
+    await page.waitForSelector('#contentPrincipal_txt_read', { timeout: 10000 });
+    await page.click('#contentPrincipal_txt_read', { clickCount: 3 });
+    await page.type('#contentPrincipal_txt_read', lectura.toString());
+    console.log('Lectura ingresada:', lectura);
+
+    // Seleccionar código de barra
+    await page.waitForSelector('#ddl_code_bar', { timeout: 10000 });
+    await page.select('#ddl_code_bar', barcode.toString());
+    console.log('Código de barra seleccionado:', barcode);
+
+    await sleep(1000);
+
+    // Click en botón FOTOS
+    await page.click('#contentPrincipal_btn_photos');
+    await sleep(3000);
+
+    // Subir fotos
+    const fotoMap = [
+      { selector: '#contentPrincipal_fup_file_1', file: fotos.foto1?.[0]?.path },
+      { selector: '#contentPrincipal_fup_file_2', file: fotos.foto2?.[0]?.path },
+      { selector: '#contentPrincipal_fup_file_3', file: fotos.foto3?.[0]?.path },
+      { selector: '#contentPrincipal_fup_file_5', file: fotos.foto5?.[0]?.path },
+    ];
+
+    for (const { selector, file } of fotoMap) {
+      if (file) {
+        const input = await page.$(selector);
+        if (input) {
+          await input.uploadFile(file);
+          await sleep(500);
+          console.log('Foto subida:', selector);
+        }
+      }
+    }
+
+    // Click Subir fotos
+    await page.click('#contentPrincipal_btn_modal_all_insert');
+    await sleep(4000);
+
+    // Click Finalizar
+    await page.waitForSelector('#contentPrincipal_btn_finish', { timeout: 15000 });
+    await page.click('#contentPrincipal_btn_finish');
+    await sleep(3000);
+
+    console.log('Formulario finalizado');
     await browser.close();
 
     // Limpiar archivos temporales
-    Object.values(fotoMap).forEach(p => { if (p) fs.unlink(p, () => {}); });
+    fotoMap.forEach(({ file }) => { if (file) fs.unlink(file, () => {}); });
 
-    res.json({ ok: true, mensaje: 'Formulario enviado exitosamente', idForm, cuenta, lectura, barcode });
+    res.json({ ok: true, mensaje: 'Formulario enviado exitosamente', cuenta, lectura, barcode });
 
   } catch (e) {
     if (browser) await browser.close().catch(() => {});
@@ -230,16 +217,29 @@ async function launchBrowser() {
       '--disable-dev-shm-usage',
       '--disable-gpu',
       '--single-process',
+      '--no-zygote',
     ],
     executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
   });
 }
 
 async function login(page) {
-  await page.goto(INTRANET_URL, { waitUntil: 'networkidle0', timeout: 30000 });
-  
-  // Buscar campos de login
-  const userField = await page.$('input[type="text"], input[name*="user"], input[id*="user"], input[name*="login"]');
+  console.log('Iniciando login...');
+  await page.goto(INTRANET_URL, {
+    waitUntil: 'domcontentloaded',
+    timeout: 60000
+  });
+
+  await sleep(2000);
+
+  // Buscar campo usuario
+  const userSelectors = ['input[name*="user"]', 'input[id*="user"]', 'input[name*="login"]', 'input[type="text"]'];
+  let userField = null;
+  for (const sel of userSelectors) {
+    userField = await page.$(sel);
+    if (userField) break;
+  }
+
   const passField = await page.$('input[type="password"]');
 
   if (userField && passField) {
@@ -247,21 +247,23 @@ async function login(page) {
     await userField.type(INTRANET_USER);
     await passField.click({ clickCount: 3 });
     await passField.type(INTRANET_PASS);
-    
-    // Submit
+
     const submitBtn = await page.$('input[type="submit"], button[type="submit"]');
     if (submitBtn) {
       await submitBtn.click();
     } else {
       await passField.press('Enter');
     }
-    await page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 15000 }).catch(() => {});
+
+    await sleep(4000);
+    console.log('Login completado, URL actual:', page.url());
+  } else {
+    console.log('Campos de login no encontrados, puede que ya esté logueado');
   }
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-// ===================== INICIO =====================
 app.listen(PORT, () => {
   console.log(`🚀 Servidor medidor corriendo en puerto ${PORT}`);
 });
