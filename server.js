@@ -48,16 +48,44 @@ app.post('/buscar-cuenta', async (req, res) => {
     await page.type('#txt_search', cuenta.toString());
     console.log('Cuenta ingresada:', cuenta);
 
-    // Buscar y hacer click en Iniciar formulario
-    await page.evaluate(() => {
-      const btns = [...document.querySelectorAll('input[type="submit"], button, input[type="button"]')];
-      const btn = btns.find(b => (b.value || b.textContent || '').toLowerCase().includes('iniciar'));
-      if (btn) btn.click();
-    });
+    // Primero revisar si la cuenta ya está en lista de pendientes
+    const pendienteClick = await page.evaluate((cuentaBuscar) => {
+      const items = [...document.querySelectorAll('a, div, span, li, td')];
+      const pendiente = items.find(el => 
+        el.textContent.trim().startsWith(cuentaBuscar) && 
+        !el.children.length || (el.textContent.includes(cuentaBuscar) && el.className.includes('list'))
+      );
+      if (pendiente) { pendiente.click(); return true; }
+      return false;
+    }, cuenta.toString());
 
-    await sleep(4000);
+    if (pendienteClick) {
+      console.log('Cuenta encontrada en pendientes, abriendo...');
+      await sleep(4000);
+    } else {
+      // Iniciar formulario nuevo
+      await page.evaluate(() => {
+        const btns = [...document.querySelectorAll('input[type="submit"], button, input[type="button"]')];
+        const btn = btns.find(b => (b.value || b.textContent || '').toLowerCase().includes('iniciar'));
+        if (btn) btn.click();
+      });
+      await sleep(4000);
 
-    // Extraer datos
+      // Si no encontró, buscar en lista de pendientes por texto
+      const enPendientes = await page.evaluate((cuentaBuscar) => {
+        const links = [...document.querySelectorAll('a, [onclick]')];
+        const link = links.find(el => el.textContent.includes(cuentaBuscar));
+        if (link) { link.click(); return true; }
+        return false;
+      }, cuenta.toString());
+
+      if (enPendientes) {
+        console.log('Abriendo desde lista pendientes...');
+        await sleep(4000);
+      }
+    }
+
+    // Extraer datos del formulario abierto
     const datos = await page.evaluate(() => {
       const content = document.getElementById('contentPrincipal_div_result');
       if (!content) return null;
@@ -86,7 +114,7 @@ app.post('/buscar-cuenta', async (req, res) => {
     if (datos && datos.cliente !== '—') {
       res.json({ ok: true, ...datos });
     } else {
-      res.json({ ok: false, mensaje: 'Cuenta no encontrada en el sistema' });
+      res.json({ ok: false, mensaje: 'Cuenta no encontrada. Verifica el número.' });
     }
 
   } catch (e) {
@@ -131,12 +159,22 @@ app.post('/enviar-formulario', upload.fields([
     await page.click('#txt_search', { clickCount: 3 });
     await page.type('#txt_search', cuenta.toString());
 
-    // Click Iniciar formulario
-    await page.evaluate(() => {
-      const btns = [...document.querySelectorAll('input[type="submit"], button, input[type="button"]')];
-      const btn = btns.find(b => (b.value || b.textContent || '').toLowerCase().includes('iniciar'));
-      if (btn) btn.click();
-    });
+    // Intentar abrir desde pendientes primero
+    const pendienteClick = await page.evaluate((cuentaBuscar) => {
+      const links = [...document.querySelectorAll('a, [onclick], div, span')];
+      const link = links.find(el => el.textContent.includes(cuentaBuscar));
+      if (link) { link.click(); return true; }
+      return false;
+    }, cuenta.toString());
+
+    if (!pendienteClick) {
+      // Iniciar formulario nuevo
+      await page.evaluate(() => {
+        const btns = [...document.querySelectorAll('input[type="submit"], button, input[type="button"]')];
+        const btn = btns.find(b => (b.value || b.textContent || '').toLowerCase().includes('iniciar'));
+        if (btn) btn.click();
+      });
+    }
 
     await sleep(4000);
 
@@ -156,7 +194,7 @@ app.post('/enviar-formulario', upload.fields([
     // Seleccionar código de barra
     await page.waitForSelector('#ddl_code_bar', { timeout: 10000 });
     await page.select('#ddl_code_bar', barcode.toString());
-    console.log('Código de barra seleccionado:', barcode);
+    console.log('Código de barra:', barcode);
 
     await sleep(1000);
 
@@ -192,10 +230,9 @@ app.post('/enviar-formulario', upload.fields([
     await page.click('#contentPrincipal_btn_finish');
     await sleep(3000);
 
-    console.log('Formulario finalizado');
+    console.log('Formulario finalizado OK');
     await browser.close();
 
-    // Limpiar archivos temporales
     fotoMap.forEach(({ file }) => { if (file) fs.unlink(file, () => {}); });
 
     res.json({ ok: true, mensaje: 'Formulario enviado exitosamente', cuenta, lectura, barcode });
@@ -219,7 +256,6 @@ async function launchBrowser() {
       '--single-process',
       '--no-zygote',
     ],
-    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
   });
 }
 
@@ -232,7 +268,6 @@ async function login(page) {
 
   await sleep(2000);
 
-  // Buscar campo usuario
   const userSelectors = ['input[name*="user"]', 'input[id*="user"]', 'input[name*="login"]', 'input[type="text"]'];
   let userField = null;
   for (const sel of userSelectors) {
@@ -256,9 +291,9 @@ async function login(page) {
     }
 
     await sleep(4000);
-    console.log('Login completado, URL actual:', page.url());
+    console.log('Login OK, URL:', page.url());
   } else {
-    console.log('Campos de login no encontrados, puede que ya esté logueado');
+    console.log('Sin campos login, puede que ya esté logueado');
   }
 }
 
