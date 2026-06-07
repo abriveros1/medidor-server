@@ -11,13 +11,22 @@ const INTRANET_URL = 'https://www.tuintranet.cl/razor/';
 const INTRANET_USER = process.env.INTRANET_USER || '167448429';
 const INTRANET_PASS = process.env.INTRANET_PASS || '16744';
 
-app.use(cors());
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+}));
+app.options('*', cors()); // preflight para todos los endpoints
 app.use(express.json());
 
 const upload = multer({ dest: '/tmp/uploads/' });
 
 app.get('/', (req, res) => {
   res.json({ ok: true, mensaje: 'Servidor Medidor funcionando ✅' });
+});
+
+app.get('/health', (req, res) => {
+  res.json({ ok: true, status: 'online', version: '1.0.0' });
 });
 
 // ===================== BUSCAR CUENTA =====================
